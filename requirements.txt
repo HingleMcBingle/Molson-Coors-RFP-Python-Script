@@ -26,3 +26,6 @@ six
 typing_extensions
 tzdata
 urllib3
+openai
+numpy
+time
