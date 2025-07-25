@@ -5,6 +5,7 @@ import os
 import io
 import time
 import pandas as pd
+import openpyxl
 import numpy as np
 from openai import AzureOpenAI
 from openai._exceptions import RateLimitError
@@ -21,7 +22,6 @@ def grab_from_blob(sas_url,sas_token,container):
     logging.info('Grabbing files...')
 
     #Blob Storage Access
-    
     folders = ["documents/","traceability_matrix/"]
 
     if not sas_url or not sas_token or not container:
@@ -61,6 +61,22 @@ def grab_from_blob(sas_url,sas_token,container):
 
             #WHEW the traceability matrix has multiple sheets so we gotta make sure we can read each one
             elif folder == "traceability_matrix/":
+                if not blob.name.lower().endswith((".xlsx", ".xlsm", ".xls")):
+                    logging.warning(f"Skipping non-Excel file in traceability_matrix: {blob.name}")
+                    continue
+
+                    # Now read the workbook with openpyxl
+                    try:
+                        sheets = pd.read_excel(
+                            io.BytesIO(file_info["content"]),
+                            sheet_name=None,
+                            engine="openpyxl"
+                        )
+                    except Exception as e:
+                        logging.error(f"Failed to read Excel {blob.name}: {e}")
+                        continue  # skip this file and move on
+
+                    logging.info(f"\nTraceability Matrix '{blob.name}' contains {len(sheets)} sheets:\n")
                 #io.bytesIO wraps binary from file_data as a file like object so pandas can read it/sheet_name = none tells pandas to load all sheets in the excel workbook
                 #create a dictionary where each key is a sheet name and its value is a dataframe of that sheet
                 sheets = pd.read_excel(io.BytesIO(file_info["content"]), sheet_name=None)
