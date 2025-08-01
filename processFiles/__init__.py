@@ -7,6 +7,7 @@ import time
 import pandas as pd
 import openpyxl
 import numpy as np
+import re
 from openai import AzureOpenAI
 from openai._exceptions import RateLimitError
 from dotenv import load_dotenv
@@ -194,16 +195,6 @@ def compare_files(foundry_url,foundry_key,all_doc_rows,matrix_json):
 
         For ambiguous cases, list all possible prefix options, referencing the "Requirement Type" column.
 
-        Return **only** a results table with these columns:
-
-        - Document Requirement ID  
-        - Document Description  
-        - Issue Type (Missing Requirement, Suggest Correct ID, Description Mismatch, etc.)  
-        - Suggested Full Requirement ID (if applicable)  
-        - Traceability Matrix Description (if applicable)  
-        - Suggested Revision (if applicable)  
-        - Brief Explanation  
-
         Abbreviations for Requirement Type Prefixes:  
         - FR = Functional or Detailed  
         - BR = Business  
@@ -212,11 +203,47 @@ def compare_files(foundry_url,foundry_key,all_doc_rows,matrix_json):
         If FR appears as the prefix, use the Requirement Type column to distinguish between Functional or Detailed types as needed.
 
         **Only** return the results table. **Do not** explain your process.
+
+        **Output format**  
+        Output only JSON with a top‑level comparison array of objects, each object containing exactly these keys: requirementID, description, issueType, suggestedFullRequirementID, matrixDescription, suggestedRevision, and briefExplanation. Do not output markdown tables or any other text.”. Each result object must have these properties:
+
+        requirementID              (string)  
+        description                (string)  
+        issueType                  (string)  // e.g. DescriptionMismatch, SuggestCorrectID, MissingRequirement, NoIssue  
+        suggestedFullRequirementID (string or null)  
+        matrixDescription          (string or null)  
+        suggestedRevision          (string or null)  
+        briefExplanation           (string)
+
+        """
+    SYSTEM_INSTRUCTIONS2 = """
+        You will receive two inputs:
+        document tables(all_row_docs) and a matrix(sample_matrix_json). 
+        document tables is an array of objects extracted from project documents; look for tables that have a requirementID (string) and description (string) header. 
+        traceability_matrix is an array of objects from the requirements traceability matrix;
+        Use the "Requirement ID" column from document tables as a key to compare the rows from document tables to the "Task Or ActivityL4" column from the matrix
+        If the Requirement ID doesnt exist in the matrix, use the description column as a key and compare based on the descriptions.
+
+        Match each document tables entry to a matrix entry by comparing requirementID in document tables to taskOrActivityL4 in the matrix. 
+        For each row:
+        If the ID matches but descriptions differ, issueType = "DescriptionMismatch".
+        If neither ID nor similar description found, issueType = "MissingRequirement"
+        suggest,if necessary, an improvement in language for the description for each requirement.
+        if the issueType is neither "DescriptionMismatch" or "MissingRequirement", create a category that fits the issue or if language improvement suggested, issueType=langRevision.
+        
+        For the output:
+        
+        *output only** a JSON **array** of objects (no wrapper, no Markdown, no code‐fences, no back slashes), each object having exactly these keys: requirementID (string) description (string) issueType (string) suggestedRevision (string) briefExplanation (string) Example of the exact format you must return (on one line): [{"requirementID":"RL‑030‑010","description":"…","issueType":"MissingRequirement","suggestedRevision":"use better language","briefExplanation":"No match."}, …]
+        Make absolutely sure the JSON array you return is closed with a ] and contains no extra or missing brackets.
+        put Requirement ID in the Requirement ID column
+        put the Issue Type in the issueType column
+        put Suggestions in the Suggested Revision column
+        put the explanation of the suggestions in the briefExplanation column
         """
     messages = [
         {
             "role": "system",
-            "content": SYSTEM_INSTRUCTIONS
+            "content": SYSTEM_INSTRUCTIONS2
         },
         {
             "role": "user",
@@ -231,14 +258,82 @@ def compare_files(foundry_url,foundry_key,all_doc_rows,matrix_json):
         client,
         messages=messages,
         model="compareFiles",
-        max_completion_tokens=800,
+        max_completion_tokens=10000,
         temperature=1.0,
         top_p=1.0,
         frequency_penalty=0.0,
         presence_penalty=0.0
     )
+    logging.info(f"Model finished with:, {response.choices[0].finish_reason}")
 
-    return response.choices[0].message.content
+    agent_output = response.choices[0].message.content 
+    # if agent_output.startswith('"[') and agent_output.endswith(']"'):
+    #     # strip the wrapping quotes
+    #     agent_output = agent_output[1:-1]
+    #     # unescape interior quotes
+    #     agent_output = agent_output.replace('\\"', '"')
+    parsed = json.loads(agent_output)
+    return parsed
+
+def make_html_table(comparison_list):
+    # 1. Define the columns in the order you want them to appear
+    cols = ["requirementID", "description", "issueType", "suggestedRevision", "briefExplanation"]
+
+    # 2. Build the header row: wrap each column name in a <th> tag
+    header_cells = [f"<th>{col}</th>" for col in cols]
+    header_row   = "<tr>" + "".join(header_cells) + "</tr>"
+
+    # 3. Build each data row: for every dict in comparison_list, produce a <tr> of <td> cells
+    rows_html = []
+    for item in comparison_list:
+        cell_html = [f"<td>{ item.get(col, '') }</td>" for col in cols]
+        rows_html.append("<tr>" + "".join(cell_html) + "</tr>")
+    body_rows = "\n".join(rows_html)
+
+    # 4. Wrap it all in a scrollable <div> and a styled <table>
+    html = f"""
+    <div style="width:100vw; max-height:100vh; overflow:auto;">
+      <table border="1" style="border-collapse:collapse; width:100%;">
+        <thead style="position:sticky; top:0; background:#eee;">
+          {header_row}
+        </thead>
+        <tbody>
+          {body_rows}
+        </tbody>
+      </table>
+    </div>
+    """
+    return html
+
+def normalize_comparison_str(s: str) -> list:
+    """
+    Turn something like:
+      "[{\"a\":1}, {\"b\":2}…]"
+    or even
+      "\"[{\\\"a\\\":1}, {\\\"b\\\":2}]\""
+    into a real Python list of dicts.
+    """
+    s = s.strip()
+
+    # 1) If it’s wrapped in extra double‐quotes, remove them
+    if s.startswith('"') and s.endswith('"'):
+        s = s[1:-1]
+
+    # 2) Unescape any embedded \" and \\n
+    s = s.replace('\\"', '"').replace('\\\\\"', '"')
+    s = s.replace('\\n', '').replace('\\r', '')
+
+    # 3) Ensure it starts with [ and ends with ]
+    if not s.startswith('['):
+        idx = s.find('[')
+        if idx != -1:
+            s = s[idx:]
+    if not s.endswith(']'):
+        s += ']'
+
+    # 4) Now parse
+    return json.loads(s)
+
 
 # @app.function_name(name="processFiles")
 # @app.route(route="processFiles", auth_level=func.AuthLevel.ANONYMOUS)
@@ -289,22 +384,23 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             .to_dict(orient="records")
         )    
 
-        sample_matrix_json = full_matrix_json[:100]
+        sample_matrix_json = full_matrix_json[:500]
 
         comparison = compare_files(
             foundry_url,
             foundry_key,
             all_doc_rows,
             sample_matrix_json)
+        html_Table = make_html_table(comparison)
 
         result = {
             "summary": {
                 "documentsProcessed": len(documents),
-                "tablesExtracted": len(docuTables)
+                "tablesExtracted":   len(docuTables)
             },
-            "comparison": comparison
+            "comparison": comparison,
+            "htmlTable" : html_Table
         }
-
         return func.HttpResponse(
             body=json.dumps(result, ensure_ascii=False),
             status_code=200,
