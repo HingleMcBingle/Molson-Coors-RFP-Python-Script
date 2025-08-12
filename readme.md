@@ -42,3 +42,10 @@ The **main** function (`processFiles`) orchestrates these steps and finally conv
 * Loads `.env` variables.
 * Orchestrates the three functions above.
 * Builds the final response JSON:
+
+#Heres the full functioning application!
+
+![document upload](https://github.com/user-attachments/assets/fb97ccd1-cbcb-4005-9e4c-44f604382688)
+![Matrix Upload](https://github.com/user-attachments/assets/009dae34-e42f-48a2-919a-358bb721e738)
+![start analyzer](https://github.com/user-attachments/assets/3c108e6b-84d6-4257-a698-4df5a60dec5c)
+![results](https://github.com/user-attachments/assets/d37fb237-341c-462b-950d-84000236f61f)
